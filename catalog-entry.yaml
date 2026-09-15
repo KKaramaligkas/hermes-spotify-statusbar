@@ -1,6 +1,6 @@
 name: spotify-statusbar
 repo: https://github.com/KKaramaligkas/hermes-spotify-statusbar
-sha: 7aa5ee0861c52411e1e7a0be76d7b9025176021b
+sha: c8b7a3e29b092143c5277c0269eb9fdca6b51a25
 description: 'Spotify player in the Hermes desktop status bar: play/pause, next, previous
   and live progress. Needs NO Spotify developer app or OAuth — on Windows it drives the
   Spotify desktop app through the OS media-session API, so having Spotify open is the
