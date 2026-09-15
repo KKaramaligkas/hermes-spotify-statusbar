@@ -1,0 +1,10 @@
+# Python bytecode from importing plugin_api.py during testing.
+__pycache__/
+*.pyc
+
+# Plugin runtime state the backend writes beside the install.
+.hermes-catalog.json
+.hermes-package.json
+
+.DS_Store
+Thumbs.db
