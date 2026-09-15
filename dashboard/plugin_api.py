@@ -1,8 +1,15 @@
 """Backend for the spotify-statusbar desktop player.
 
-Mounted at /api/plugins/spotify-statusbar/. Runs inside the Hermes backend
-process, so it reuses the bundled Spotify plugin's client (token refresh
-included) instead of re-implementing auth.
+Mounted at /api/plugins/spotify-statusbar/.
+
+Two providers, chosen at request time:
+
+- **webapi** — used when Spotify is connected via `hermes auth spotify`. Full
+  features (multi-device, volume, artwork, seek) through the Spotify Web API.
+- **local** — used otherwise. Windows' media session API (SMTC) reads the
+  Spotify desktop app's own session, so it needs NO developer app, NO client id
+  and no consent flow: just Spotify open and logged in on this machine.
+  Everything else is hidden rather than faked.
 
 Routes never raise for a missing login or an unplayable state — they return a
 shaped result the player can render. A 500 here would surface as a broken
@@ -12,12 +19,62 @@ widget, so failures become data.
 from __future__ import annotations
 
 import json
+import os
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 from fastapi import APIRouter
 
 router = APIRouter()
+
+
+def _load_sibling(name: str):
+    """Import a sibling .py from this directory, or None if that fails.
+
+    The host mounts THIS file with importlib.spec_from_file_location under a
+    synthetic module name, so this module is not part of a package and
+    `from . import x` raises "attempted relative import with no known parent
+    package". Mirror the host's own loader, and register in sys.modules before
+    exec so annotations resolve — but under a plugin-specific prefix, so a
+    generic name like `smtc` cannot collide with another plugin's module.
+    """
+    try:
+        import importlib.util
+        import sys
+        from pathlib import Path
+
+        module_name = f"hermes_dashboard_plugin_spotify_statusbar_{name}"
+        cached = sys.modules.get(module_name)
+        if cached is not None:
+            return cached
+
+        path = Path(__file__).with_name(f"{name}.py")
+        spec = importlib.util.spec_from_file_location(module_name, path)
+        if spec is None or spec.loader is None:
+            return None
+
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[module_name] = module
+        try:
+            spec.loader.exec_module(module)
+        except Exception:
+            sys.modules.pop(module_name, None)
+            raise
+        return module
+    except Exception:
+        # A missing/broken sibling must only disable that provider, never break
+        # the module import (a failed import means NO routes get mounted).
+        return None
+
+
+smtc = _load_sibling("smtc")
+
+# Actions that mutate playback need Premium; Spotify answers 403 otherwise and
+# the client's friendly-error mapping turns that into a readable message.
+_TRANSPORT_PATHS = {
+    "next": ("POST", "/me/player/next"),
+    "previous": ("POST", "/me/player/previous"),
+}
 
 
 def _log(entry: Dict[str, Any]) -> None:
@@ -38,12 +95,58 @@ def _log(entry: Dict[str, Any]) -> None:
     except Exception:
         pass
 
-# Actions that mutate playback need Premium; Spotify answers 403 otherwise and
-# the client's friendly-error mapping turns that into a readable message.
-_TRANSPORT_PATHS = {
-    "next": ("POST", "/me/player/next"),
-    "previous": ("POST", "/me/player/previous"),
-}
+
+# -- provider selection ------------------------------------------------------
+
+
+def _connected() -> bool:
+    """True when `hermes auth spotify` has stored tokens."""
+    try:
+        from hermes_cli.auth import get_auth_status
+
+        return bool(get_auth_status("spotify").get("logged_in"))
+    except Exception:
+        return False
+
+
+def _preferred_provider() -> Optional[str]:
+    """Which provider to use, honouring an explicit override.
+
+    Default precedence is webapi-when-connected: it is strictly richer, and the
+    local provider exists so the plugin works with zero setup, not to replace the
+    full integration. Force the local path with
+    HERMES_SPOTIFY_STATUSBAR_PROVIDER=local.
+    """
+    override = (os.environ.get("HERMES_SPOTIFY_STATUSBAR_PROVIDER") or "").strip().lower()
+    if override in {"local", "webapi"}:
+        return override
+    if _connected():
+        return "webapi"
+    return "local" if (smtc is not None and smtc.available()) else None
+
+
+def _unavailable(reason: str) -> Dict[str, Any]:
+    return {
+        "ok": True,
+        "provider": None,
+        "available": False,
+        "playing": False,
+        "error": reason,
+    }
+
+
+def _empty(provider: str) -> Dict[str, Any]:
+    """Provider works, but there is nothing to control right now."""
+    return {
+        "ok": True,
+        "provider": provider,
+        "available": False,
+        "playing": False,
+        "error": None,
+    }
+
+
+# -- webapi provider helpers -------------------------------------------------
 
 
 def _client():
@@ -69,37 +172,34 @@ def _active_or_first_device(client) -> Optional[Dict[str, Any]]:
     return next((d for d in devices if d.get("is_active")), None) or (devices[0] if devices else None)
 
 
-@router.get("/now")
-async def now() -> dict:
-    """Current playback, shaped for the player.
-
-    Always 200. `logged_in: false` means Spotify auth is missing entirely;
-    `playing: false` means auth is fine but nothing is playing (or no device).
-    """
+def _webapi_now() -> Dict[str, Any]:
     try:
         client = _client()
-    except Exception as exc:  # auth missing / not configured
-        return {"logged_in": False, "playing": False, "error": f"{type(exc).__name__}"}
+    except Exception as exc:
+        return _unavailable(f"Spotify is not reachable ({type(exc).__name__})")
 
     try:
         state = client.get_playback_state()
     except Exception as exc:
-        return {"logged_in": True, "playing": False, "error": f"{type(exc).__name__}: {exc}"}
+        return _unavailable(f"{type(exc).__name__}: {exc}")
 
     # get_playback_state returns a sentinel dict on 204 (nothing playing).
     if not state or state.get("empty") or state.get("status_code") == 204:
-        return {"logged_in": True, "playing": False}
+        return _empty("webapi")
 
     item = state.get("item") or {}
     if not item:
-        return {"logged_in": True, "playing": False}
+        return _empty("webapi")
 
     album = item.get("album") or {}
     images = album.get("images") or []
     device = state.get("device") or {}
+    volume = device.get("volume_percent")
 
     return {
-        "logged_in": True,
+        "ok": True,
+        "provider": "webapi",
+        "available": True,
         "playing": bool(state.get("is_playing")),
         "title": item.get("name") or "",
         "artists": _artist_line(item),
@@ -107,46 +207,25 @@ async def now() -> dict:
         "image": images[-1].get("url") if images else None,
         "uri": item.get("uri") or "",
         "url": (item.get("external_urls") or {}).get("spotify") or "",
-        "progress_ms": state.get("progress_ms") or 0,
+        "position_ms": state.get("progress_ms") or 0,
         "duration_ms": item.get("duration_ms") or 0,
         "shuffle": bool(state.get("shuffle_state")),
         "repeat": state.get("repeat_state") or "off",
         "device": device.get("name") or "",
-        "device_supports_volume": bool(device.get("supports_volume")),
-        "volume": device.get("volume_percent"),
+        "volume": volume,
+        "has_volume": bool(device.get("supports_volume")) and volume is not None,
+        "supports_next": True,
+        "supports_prev": True,
+        "can_seek": True,
+        "error": None,
     }
 
 
-@router.post("/command")
-async def command(body: dict) -> dict:
-    """Transport control: toggle / play / pause / next / previous / seek / volume.
-
-    Returns `{ok, action, ...}` — a failure is a shaped result, never an
-    exception, so the player can show a message instead of disappearing.
-    """
-    result = await _dispatch(body)
-    _log(
-        {
-            "caller": "desktop-player",
-            "requested": (body or {}).get("action"),
-            "action": result.get("action"),
-            "ok": result.get("ok"),
-            "error": result.get("error"),
-            "volume_percent": (body or {}).get("volume_percent"),
-        }
-    )
-    return result
-
-
-async def _dispatch(body: dict) -> dict:
-    action = str((body or {}).get("action") or "").strip().lower()
-    if not action:
-        return {"ok": False, "error": "missing action"}
-
+def _webapi_command(action: str, body: Dict[str, Any]) -> Dict[str, Any]:
     try:
         client = _client()
     except Exception as exc:
-        return {"ok": False, "error": f"Spotify is not connected ({type(exc).__name__})"}
+        return {"ok": False, "action": action, "error": f"Spotify is not connected ({type(exc).__name__})"}
 
     try:
         if action == "toggle":
@@ -198,6 +277,67 @@ async def _dispatch(body: dict) -> dict:
             client.request("PUT", "/me/player/volume", params={"volume_percent": percent})
             return {"ok": True, "action": "volume", "volume_percent": percent}
 
-        return {"ok": False, "error": f"unknown action: {action}"}
+        return {"ok": False, "action": action, "error": f"unknown action: {action}"}
     except Exception as exc:
         return {"ok": False, "action": action, "error": str(exc)}
+
+
+# -- routes ------------------------------------------------------------------
+
+
+@router.get("/now")
+async def now() -> dict:
+    """Current playback, shaped for the player.
+
+    Always 200. `available: false` means there is nothing to control right now
+    (Spotify not running, or not connected) and `provider` names which backend
+    answered — the renderer uses both to decide what to draw.
+    """
+    provider = _preferred_provider()
+    if provider is None:
+        return _unavailable(
+            "Local control needs the Spotify desktop app on Windows; "
+            "run `hermes auth spotify` for the full Web API integration."
+        )
+    if provider == "webapi":
+        return _webapi_now()
+    if smtc is None:
+        return _unavailable("The local media-session provider failed to load on this host.")
+    return smtc.provider().now()
+
+
+@router.post("/command")
+async def command(body: dict) -> dict:
+    """Transport control: toggle / play / pause / next / previous / seek / volume.
+
+    Returns `{ok, action, ...}` — a failure is a shaped result, never an
+    exception, so the player can show a message instead of disappearing.
+    """
+    action = str((body or {}).get("action") or "").strip().lower()
+    if not action:
+        return {"ok": False, "error": "missing action"}
+
+    provider = _preferred_provider()
+    if provider == "webapi":
+        result = _webapi_command(action, body or {})
+    elif provider == "local":
+        result = (
+            smtc.provider().command(action, body or {})
+            if smtc is not None
+            else {"ok": False, "action": action, "error": "the local media-session provider failed to load"}
+        )
+    else:
+        result = {"ok": False, "action": action, "error": "no Spotify provider is available"}
+
+    _log(
+        {
+            "caller": "desktop-player",
+            "provider": provider,
+            "requested": (body or {}).get("action"),
+            "action": result.get("action"),
+            "ok": result.get("ok"),
+            "error": result.get("error"),
+            "volume_percent": (body or {}).get("volume_percent"),
+        }
+    )
+    return result

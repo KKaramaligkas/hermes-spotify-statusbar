@@ -91,7 +91,7 @@ function NextArrow() {
   })
 }
 
-function SmallAction({ label, icon, onClick, busy = false, pressed }) {
+function SmallAction({ label, icon, onClick, busy = false, pressed, disabled = false }) {
   return jsx(Tip, {
     label,
     children: jsx(Button, {
@@ -100,6 +100,7 @@ function SmallAction({ label, icon, onClick, busy = false, pressed }) {
       className: 'hermes-spotify-action',
       'aria-label': label,
       'aria-pressed': pressed,
+      disabled,
       onClick,
       children: jsx('span', {
         className: 'hermes-spotify-action-icon',
@@ -145,14 +146,26 @@ function SpotifyBar() {
   }, [data, volumeDraft])
 
   // Every hook above; safe to bail now.
-  if (!data || !data.logged_in) return null
+  //
+  // `available` means the backend found a live player — with the local
+  // (media-session) provider there is no login at all, so this deliberately is
+  // not `logged_in`. The `logged_in` / `position_ms` / `has_volume` fallbacks
+  // cover exactly one window: plugin.js hot-reloads from disk the moment it is
+  // saved, while plugin_api.py only takes effect when the backend restarts.
+  // Without them the player disappears during that gap instead of degrading.
+  const ready = data ? (data.available !== undefined ? data.available : data.logged_in) : false
+  if (!data || !ready) return null
 
   const volume = volumeDraft === null ? data.volume : volumeDraft
   const hasTrack = Boolean(data.title)
   const label = hasTrack ? `${data.title} — ${data.artists}` : 'Spotify'
+  const canNext = data.supports_next !== false
+  const canPrev = data.supports_prev !== false
+  const hasVolume = data.has_volume !== undefined ? data.has_volume : data.device_supports_volume
+  const elapsedMs = data.position_ms || data.progress_ms || 0
 
   const progress = data.duration_ms
-    ? Math.min(data.duration_ms, (data.progress_ms || 0) + (playing ? tick * 1000 : 0))
+    ? Math.min(data.duration_ms, elapsedMs + (playing ? tick * 1000 : 0))
     : 0
 
   const send = action => extra => {
@@ -256,19 +269,24 @@ function SpotifyBar() {
                     })
                   : null,
 
-                data.device
+                data.device || data.provider === 'local'
                   ? jsxs('div', {
                       className: 'hermes-spotify-meta',
                       children: [
                         jsx('span', {
                           className: 'hermes-spotify-meta-text',
-                          children: `Playing on ${data.device}`
+                          // Naming the source matters here: the local provider has
+                          // no volume and no device picker, and silently missing
+                          // controls read as broken rather than unavailable.
+                          children: data.device
+                            ? `Playing on ${data.device}`
+                            : 'Via the Spotify desktop app'
                         })
                       ]
                     })
                   : null,
 
-                data.device_supports_volume && data.volume !== null && data.volume !== undefined
+                hasVolume && data.volume !== null && data.volume !== undefined
                   ? jsx('div', {
                       className: 'hermes-spotify-volume',
                       children: jsx('input', {
@@ -297,6 +315,7 @@ function SpotifyBar() {
                       label: 'Previous',
                       icon: () => jsx(icons.Play, { style: { transform: 'scaleX(-1)' }, fill: 'currentColor' }),
                       busy: busy === 'previous',
+                      disabled: !canPrev,
                       onClick: () => send('previous')()
                     }),
                     jsx(SmallAction, {
@@ -309,6 +328,7 @@ function SpotifyBar() {
                       label: 'Next',
                       icon: NextArrow,
                       busy: busy === 'next',
+                      disabled: !canNext,
                       onClick: () => send('next')()
                     }),
                     jsx('span', { style: { flex: 1, minWidth: 6 } }),
@@ -337,6 +357,7 @@ function SpotifyBar() {
         label: 'Next',
         icon: NextArrow,
         busy: busy === 'next',
+        disabled: !canNext,
         onClick: () => send('next')()
       })
     ]

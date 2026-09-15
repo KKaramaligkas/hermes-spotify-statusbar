@@ -1,6 +1,6 @@
 name: spotify-statusbar
-version: 1.1.0
-description: "Spotify player for the Hermes desktop status bar: play/pause, next, previous, live progress and volume. Ships a dashboard/plugin_api.py (GET /now, POST /command) that reuses the bundled Spotify client, plus a desktop/plugin.js status-bar contribution. Requires `hermes auth spotify`."
+version: 1.2.0
+description: "Spotify player for the Hermes desktop status bar: play/pause, next, previous and live progress, with artwork, device and volume when the Spotify connection is available. Needs NO developer app: on Windows it drives the Spotify desktop app through the OS media-session API, so having Spotify open and logged in is the whole setup. Falls back to the richer Spotify Web API integration when `hermes auth spotify` is connected."
 author: KKaramaligkas
 kind: backend
 requires_hermes: ">=0.21.0"
