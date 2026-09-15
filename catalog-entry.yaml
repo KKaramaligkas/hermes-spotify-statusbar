@@ -1,10 +1,11 @@
 name: spotify-statusbar
 repo: https://github.com/KKaramaligkas/hermes-spotify-statusbar
-sha: ebfc3b870986c9c83caaa889138b67c95159da66
-description: 'Spotify player in the Hermes desktop status bar: play/pause, next, previous,
-  live progress and volume, with a popover showing album art, device and elapsed time.
-  Reuses Hermes'' own Spotify auth, so no credentials are stored by the plugin, and
-  renders nothing at all when Spotify is not connected.'
+sha: 7aa5ee0861c52411e1e7a0be76d7b9025176021b
+description: 'Spotify player in the Hermes desktop status bar: play/pause, next, previous
+  and live progress. Needs NO Spotify developer app or OAuth — on Windows it drives the
+  Spotify desktop app through the OS media-session API, so having Spotify open is the
+  whole setup. When `hermes auth spotify` is connected it uses the richer Web API path
+  and adds artwork, device name and volume. Renders nothing at all with no player present.'
 maintainer: KKaramaligkas
 tier: community
 category: desktop
