@@ -136,7 +136,14 @@ class SmtcProvider:
             "title": raw.get("title") or "",
             "artists": raw.get("artists") or "",
             "album": raw.get("album") or "",
-            "image": None,  # SMTC exposes artwork as a stream, not a URL
+            # SMTC DOES expose artwork (MediaProperties.Thumbnail) but hands it over as
+            # a WinRT stream, and Windows PowerShell cannot read one: OpenReadAsync
+            # returns a bare __ComObject with no late-bound methods, and casting it to
+            # IInputStream raises "Cannot convert System.__ComObject ... to type
+            # IInputStream". Reading it needs a compiled C# helper, which is not worth
+            # a dependency for a decorative 44px image. The renderer draws a glyph
+            # instead; the Web API provider still supplies real artwork.
+            "image": None,
             "uri": "",
             "url": "",
             "position_ms": int(raw.get("position_ms") or 0),

@@ -124,6 +124,7 @@ restores the stock bar.
 | Nothing appears, and Spotify is open | Backend started before the plugin was enabled → restart the app |
 | Appears then vanishes | `plugin.js` threw at render — a toast names the failure |
 | "Via the Spotify desktop app" and no volume | Expected: the local provider has no volume control |
+| No album artwork | Expected with the local provider. Windows exposes the artwork only as a WinRT stream, which Windows PowerShell cannot read without a compiled C# helper — not worth a dependency for a 44px image. Artwork returns with the Spotify connection |
 | Nothing at all on macOS/Linux | The local provider is Windows-only; connect Spotify (`hermes auth spotify`) to use the Web API path |
 | A browser tab shows as now-playing | Should not happen — the worker filters to the Spotify app. Please report it |
 

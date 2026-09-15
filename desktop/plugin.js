@@ -61,6 +61,9 @@ const CSS = `
 .hermes-spotify-panel{width:292px;max-width:calc(100vw - 24px);padding:8px}
 .hermes-spotify-head{display:flex;align-items:center;gap:8px;min-width:0}
 .hermes-spotify-art{width:44px;height:44px;flex-shrink:0;border-radius:4px;object-fit:cover;background:var(--chrome-action-hover)}
+/* No artwork from the local provider (see smtc.py): show a glyph so the slot
+   reads as "art not available" rather than as a broken/blank image. */
+.hermes-spotify-art-empty{display:flex;align-items:center;justify-content:center;color:var(--ui-text-quaternary)}
 .hermes-spotify-head-copy{min-width:0;flex:1}
 .hermes-spotify-title{display:block;font-size:12px;line-height:17px;color:var(--ui-text-primary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .hermes-spotify-artist{display:block;font-size:11px;line-height:16px;color:var(--ui-text-tertiary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -234,7 +237,10 @@ function SpotifyBar() {
                             event.currentTarget.style.visibility = 'hidden'
                           }
                         })
-                      : jsx('span', { className: 'hermes-spotify-art' }),
+                      : jsx('span', {
+                          className: 'hermes-spotify-art hermes-spotify-art-empty',
+                          children: jsx(icons.AudioLines, {})
+                        }),
                     jsxs('span', {
                       className: 'hermes-spotify-head-copy',
                       children: [
