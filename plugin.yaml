@@ -1,6 +1,6 @@
 name: spotify-statusbar
-version: 1.2.0
-description: "Spotify player for the Hermes desktop status bar: play/pause, next, previous and live progress, with artwork, device and volume when the Spotify connection is available. Needs NO developer app: on Windows it drives the Spotify desktop app through the OS media-session API, so having Spotify open and logged in is the whole setup. Falls back to the richer Spotify Web API integration when `hermes auth spotify` is connected."
+version: 1.3.0
+description: "Spotify player for the Hermes desktop status bar: play/pause, next, previous and live progress, with artwork, device and volume when the Spotify connection is available. Needs NO developer app: on Windows it drives the Spotify desktop app through the OS media-session API, so having Spotify open is the whole setup. When there is nothing to control the chip offers the fix — open the Spotify app, or connect the account — instead of vanishing."
 author: KKaramaligkas
 kind: backend
 requires_hermes: ">=0.21.0"

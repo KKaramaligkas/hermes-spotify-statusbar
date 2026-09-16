@@ -161,6 +161,19 @@ class SmtcProvider:
             "error": None,
         }
 
+    def launch(self) -> Dict[str, Any]:
+        """Start the Spotify desktop app. Safe when it is already running."""
+        if not available():
+            return {"ok": False, "action": "launch", "error": "starting Spotify from here is Windows-only"}
+        raw = self._exchange({"op": "launch"})
+        ok = bool(raw.get("ok"))
+        return {
+            "ok": ok,
+            "action": "launch",
+            "how": raw.get("how") or None,
+            "error": None if ok else "could not start the Spotify app",
+        }
+
     def command(self, action: str, body: Dict[str, Any]) -> Dict[str, Any]:
         if action == "seek":
             raw = self._exchange({"op": "cmd", "action": "seek", "position_ms": int(body.get("position_ms") or 0)})

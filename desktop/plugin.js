@@ -76,6 +76,11 @@ const CSS = `
 .hermes-spotify-volume input{flex:1;min-width:0;height:3px;accent-color:var(--ui-accent);cursor:pointer}
 .hermes-spotify-actions{display:flex;align-items:center;gap:2px;margin-top:6px}
 .hermes-spotify-note{font-size:11px;line-height:17px;color:var(--ui-text-secondary);padding:2px 0}
+/* Empty-state recovery: when there is no player (or no account), the chip turns
+   into the action that fixes it rather than disappearing. */
+.hermes-spotify-recovery{display:flex;align-items:center;gap:3px;height:100%;padding:0 4px;font-size:11px;color:var(--ui-text-quaternary);transition:color .15s}
+.hermes-spotify-recovery:hover{color:var(--ui-text-secondary)}
+.hermes-spotify-connect{margin-top:6px}
 `
 
 function fmtTime(ms) {
@@ -109,6 +114,58 @@ function SmallAction({ label, icon, onClick, busy = false, pressed, disabled = f
         className: 'hermes-spotify-action-icon',
         children: busy ? jsx(GlyphSpinner, { ariaLabel: label }) : jsx(icon, {})
       })
+    })
+  })
+}
+
+/**
+ * Shown when there is nothing to control: offers to start Spotify, or to connect
+ * an account. A player that vanishes silently leaves the user with no idea what
+ * to do next, which is the whole reason this exists.
+ */
+function RecoveryChip({ action, icon, label, tip }) {
+  const queryClient = useQueryClient()
+  const [busy, setBusy] = useState(false)
+
+  const go = () => {
+    setBusy(true)
+    haptic('tap')
+    void (async () => {
+      try {
+        const result = await postCommand({ action })
+        if (result && result.ok === false) {
+          host.notify({ kind: 'warning', message: result.error || 'That did not work' })
+        } else if (result && result.note) {
+          host.notify({ kind: 'info', message: result.note })
+        }
+        // Launching the app takes seconds to publish a media session, so look
+        // again a few times instead of waiting a full poll to show the player.
+        for (const delay of [1500, 3000, 6000]) {
+          setTimeout(() => void queryClient.invalidateQueries({ queryKey: [ID, 'now'] }), delay)
+        }
+      } catch (error) {
+        host.notify({ kind: 'warning', message: 'Spotify is unreachable' })
+      } finally {
+        setBusy(false)
+        void queryClient.invalidateQueries({ queryKey: [ID, 'now'] })
+      }
+    })()
+  }
+
+  return jsx(Tip, {
+    label: tip,
+    children: jsxs('button', {
+      type: 'button',
+      className: 'hermes-spotify-bar hermes-spotify-recovery',
+      'aria-label': label,
+      onClick: go,
+      children: [
+        jsx('span', {
+          className: 'hermes-spotify-action-icon',
+          children: busy ? jsx(GlyphSpinner, { ariaLabel: label }) : jsx(icon, {})
+        }),
+        jsx('span', { children: label })
+      ]
     })
   })
 }
@@ -156,21 +213,6 @@ function SpotifyBar() {
   // cover exactly one window: plugin.js hot-reloads from disk the moment it is
   // saved, while plugin_api.py only takes effect when the backend restarts.
   // Without them the player disappears during that gap instead of degrading.
-  const ready = data ? (data.available !== undefined ? data.available : data.logged_in) : false
-  if (!data || !ready) return null
-
-  const volume = volumeDraft === null ? data.volume : volumeDraft
-  const hasTrack = Boolean(data.title)
-  const label = hasTrack ? `${data.title} — ${data.artists}` : 'Spotify'
-  const canNext = data.supports_next !== false
-  const canPrev = data.supports_prev !== false
-  const hasVolume = data.has_volume !== undefined ? data.has_volume : data.device_supports_volume
-  const elapsedMs = data.position_ms || data.progress_ms || 0
-
-  const progress = data.duration_ms
-    ? Math.min(data.duration_ms, elapsedMs + (playing ? tick * 1000 : 0))
-    : 0
-
   const send = action => extra => {
     setBusy(action)
     setNote(null)
@@ -188,6 +230,44 @@ function SpotifyBar() {
       }
     })()
   }
+
+  if (!data) return null
+
+  const ready = data.available !== undefined ? data.available : data.logged_in
+  if (!ready) {
+    // Nothing to control — offer the way OUT instead of vanishing. "No player"
+    // and "no account" need different recoveries, and the backend says which of
+    // them this host can actually perform.
+    if (data.can_launch) {
+      return jsx(RecoveryChip, {
+        action: 'launch',
+        icon: icons.Play,
+        label: 'Open Spotify',
+        tip: 'Spotify is not running — click to open it'
+      })
+    }
+    if (data.can_connect) {
+      return jsx(RecoveryChip, {
+        action: 'connect',
+        icon: icons.ExternalLink,
+        label: 'Connect Spotify',
+        tip: 'Open the browser to connect your Spotify account'
+      })
+    }
+    return null
+  }
+
+  const volume = volumeDraft === null ? data.volume : volumeDraft
+  const hasTrack = Boolean(data.title)
+  const label = hasTrack ? `${data.title} — ${data.artists}` : 'Spotify'
+  const canNext = data.supports_next !== false
+  const canPrev = data.supports_prev !== false
+  const hasVolume = data.has_volume !== undefined ? data.has_volume : data.device_supports_volume
+  const elapsedMs = data.position_ms || data.progress_ms || 0
+
+  const progress = data.duration_ms
+    ? Math.min(data.duration_ms, elapsedMs + (playing ? tick * 1000 : 0))
+    : 0
 
   const commitVolume = () => {
     if (volumeDraft === null) return
@@ -351,6 +431,21 @@ function SpotifyBar() {
                       : null
                   ]
                 }),
+
+                // The upgrade path, offered where the user is actually looking:
+                // the local provider works without any account, and this is how
+                // they discover what connecting adds.
+                data.connected === false
+                  ? jsx('div', {
+                      className: 'hermes-spotify-connect',
+                      children: jsx(Button, {
+                        variant: 'text',
+                        size: 'micro',
+                        onClick: () => send('connect')(),
+                        children: 'Connect Spotify for artwork and volume'
+                      })
+                    })
+                  : null,
 
                 note ? jsx('div', { className: 'hermes-spotify-note', children: note }) : null
               ]

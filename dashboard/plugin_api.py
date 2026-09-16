@@ -20,7 +20,10 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
+import sys
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Dict, Optional
 
 from fastapi import APIRouter
@@ -123,6 +126,93 @@ def _preferred_provider() -> Optional[str]:
     if _connected():
         return "webapi"
     return "local" if (smtc is not None and smtc.available()) else None
+
+
+def _client_id_configured() -> bool:
+    """Is a Spotify developer-app client id available?
+
+    Checks the process env first (the backend loads .env at start-up) and then the
+    .env file, so a client id saved AFTER this backend started still counts.
+    """
+    keys = {"HERMES_SPOTIFY_CLIENT_ID", "SPOTIFY_CLIENT_ID"}
+    if any((os.environ.get(key) or "").strip() for key in keys):
+        return True
+    try:
+        from hermes_constants import get_hermes_home
+
+        text = (get_hermes_home() / ".env").read_text(encoding="utf-8", errors="replace")
+        for line in text.splitlines():
+            key, _, value = line.partition("=")
+            if key.strip() in keys and value.strip():
+                return True
+    except Exception:
+        pass
+    return False
+
+
+def _start_connect() -> Dict[str, Any]:
+    """Begin the Spotify OAuth flow in a detached process.
+
+    The login blocks for up to ~3 minutes waiting for the browser callback, so it
+    cannot run inside this request. It also cannot be started at all when no client
+    id is saved: that path is an interactive developer-app wizard, which would hang
+    invisibly here — so it is refused with the command to run instead.
+    """
+    if _connected():
+        return {"ok": True, "action": "connect", "noop": True}
+
+    if not _client_id_configured():
+        return {
+            "ok": False,
+            "action": "connect",
+            "error": (
+                "No Spotify developer app yet — run `hermes auth spotify` in a terminal; "
+                "it walks through creating one, then reconnects."
+            ),
+        }
+
+    try:
+        import hermes_cli
+
+        root = Path(hermes_cli.__file__).resolve().parent.parent
+        kwargs: Dict[str, Any] = {}
+        if sys.platform == "win32":
+            kwargs["creationflags"] = 0x00000008 | 0x00000200  # DETACHED_PROCESS | NEW_PROCESS_GROUP
+        else:
+            kwargs["start_new_session"] = True
+        subprocess.Popen(
+            [sys.executable, "-m", "hermes_cli.main", "auth", "spotify", "login"],
+            cwd=str(root),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            **kwargs,
+        )
+    except Exception as exc:
+        return {"ok": False, "action": "connect", "error": f"could not start the login flow: {type(exc).__name__}"}
+
+    return {
+        "ok": True,
+        "action": "connect",
+        "note": "Approve access in the browser window that just opened.",
+    }
+
+
+def _decorate(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Add the affordance fields every response carries, whatever the provider.
+
+    The renderer uses these to offer a way OUT of an empty state instead of
+    rendering nothing: launching the app and connecting the account are the two
+    recoveries, and they are host capabilities rather than current-state facts.
+    """
+    connected = _connected()
+    payload.setdefault("ok", True)
+    payload["connected"] = connected
+    # Safe even when the app is already open (it just takes focus), so this is a
+    # capability of the host, not of the current playback state.
+    payload["can_launch"] = bool(smtc is not None and smtc.available())
+    payload["can_connect"] = not connected
+    return payload
 
 
 def _unavailable(reason: str) -> Dict[str, Any]:
@@ -295,15 +385,17 @@ async def now() -> dict:
     """
     provider = _preferred_provider()
     if provider is None:
-        return _unavailable(
-            "Local control needs the Spotify desktop app on Windows; "
-            "run `hermes auth spotify` for the full Web API integration."
+        return _decorate(
+            _unavailable(
+                "Local control needs the Spotify desktop app on Windows; "
+                "run `hermes auth spotify` for the full Web API integration."
+            )
         )
     if provider == "webapi":
-        return _webapi_now()
+        return _decorate(_webapi_now())
     if smtc is None:
-        return _unavailable("The local media-session provider failed to load on this host.")
-    return smtc.provider().now()
+        return _decorate(_unavailable("The local media-session provider failed to load on this host."))
+    return _decorate(smtc.provider().now())
 
 
 @router.post("/command")
@@ -318,7 +410,18 @@ async def command(body: dict) -> dict:
         return {"ok": False, "error": "missing action"}
 
     provider = _preferred_provider()
-    if provider == "webapi":
+
+    # Host-level recoveries first: they do not depend on a player existing, which
+    # is exactly the state the renderer offers them in.
+    if action == "launch":
+        result = (
+            smtc.provider().launch()
+            if smtc is not None
+            else {"ok": False, "action": "launch", "error": "starting Spotify from here needs Windows"}
+        )
+    elif action == "connect":
+        result = _start_connect()
+    elif provider == "webapi":
         result = _webapi_command(action, body or {})
     elif provider == "local":
         result = (

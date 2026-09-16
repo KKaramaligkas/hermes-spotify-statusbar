@@ -88,6 +88,29 @@ while ($true) {
         continue
     }
 
+    if ($req.op -eq 'launch') {
+        # Start the Spotify desktop app. Three rungs, because a Store install, a
+        # classic install, and a URI-handler registration each fail differently:
+        # the AppUserModelId, then the app-execution alias, then the spotify: URI.
+        $ok = $false
+        $how = ''
+        $aumid = 'SpotifyAB.SpotifyMusic_zpdnekdrzrea0!Spotify'
+        try { Start-Process "shell:AppsFolder\$aumid" -ErrorAction Stop; $ok = $true; $how = 'aumid' }
+        catch {
+            try { Start-Process 'spotify:' -ErrorAction Stop; $ok = $true; $how = 'uri' }
+            catch {
+                try {
+                    $alias = Join-Path $env:LOCALAPPDATA 'Microsoft\WindowsApps\spotify.exe'
+                    if (Test-Path $alias) { Start-Process $alias -ErrorAction Stop; $ok = $true; $how = 'alias' }
+                } catch { }
+            }
+        }
+        # A no-op when the app is already open (it just focuses), so this is safe
+        # to call without knowing the current state.
+        Write-Line @{ op = 'launch'; ok = $ok; how = $how; action = 'launch' }
+        continue
+    }
+
     if ($req.op -eq 'cmd') {
         $s = Get-SpotifySession
         if (-not $s) { Write-Line @{ ok = $false; error = 'no Spotify session'; action = $req.action }; continue }

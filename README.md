@@ -53,6 +53,27 @@ hermes plugins enable spotify-statusbar
 2. **Toggle it on.** A plugin's desktop half is deliberately opt-in: it appears in
    **Settings → Plugins** but stays off until you flip it.
 
+### Recovering from an empty state
+
+The player never just disappears. When there is nothing to control, the chip becomes the
+action that fixes it, chosen by what the host can actually do:
+
+| State | Chip shows | Clicking it |
+|---|---|---|
+| Spotify not running (Windows) | **Open Spotify** | Starts the app — Store AppUserModelId, then the `spotify:` URI, then the `WindowsApps` alias. A no-op if it is already open |
+| No player and no account | **Connect Spotify** | Opens the browser to authorize, via a detached `hermes auth spotify login` so nothing blocks |
+| Nothing possible | *(nothing)* | — |
+
+After a launch it re-polls at 1.5 s / 3 s / 6 s, because a freshly started app takes a few
+seconds to publish a media session.
+
+While you are on the local provider, the popover also shows **"Connect Spotify for artwork
+and volume"** — the two things connecting actually adds over the zero-setup path.
+
+`connect` refuses with a clear message rather than hanging when no developer app exists yet:
+that path is an interactive wizard, so it tells you to run `hermes auth spotify` in a
+terminal instead of spawning something that would wait invisibly.
+
 ## Two providers
 
 The backend picks the best available source per request:
