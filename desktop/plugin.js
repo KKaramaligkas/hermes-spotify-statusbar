@@ -235,9 +235,21 @@ function SpotifyBar() {
 
   const ready = data.available !== undefined ? data.available : data.logged_in
   if (!ready) {
-    // Nothing to control — offer the way OUT instead of vanishing. "No player"
-    // and "no account" need different recoveries, and the backend says which of
-    // them this host can actually perform.
+    // Nothing to control — offer the way OUT instead of vanishing. "No player",
+    // "no account" and "dead tokens" need different recoveries, and the backend
+    // says which of them this host can actually perform.
+    //
+    // Re-auth first: stored tokens that no longer work are the one case where
+    // "Open Spotify" is actively wrong advice, because the app is probably
+    // already open and playing.
+    if (data.needs_reauth) {
+      return jsx(RecoveryChip, {
+        action: 'reauth',
+        icon: icons.ExternalLink,
+        label: 'Reconnect Spotify',
+        tip: 'The saved Spotify connection is no longer valid — click to authorize again'
+      })
+    }
     if (data.can_launch) {
       return jsx(RecoveryChip, {
         action: 'launch',
@@ -432,17 +444,31 @@ function SpotifyBar() {
                   ]
                 }),
 
-                // The upgrade path, offered where the user is actually looking:
-                // the local provider works without any account, and this is how
-                // they discover what connecting adds.
-                data.connected === false
+                // The account behind the saved tokens is not the one playing on
+                // this machine. Say so: the track shown is this machine's, and
+                // the fix is re-authorizing — not opening an app that is already
+                // open and playing.
+                data.account_mismatch
+                  ? jsx('div', {
+                      className: 'hermes-spotify-note',
+                      children: 'Showing this machine — your connected Spotify account is a different one.'
+                    })
+                  : null,
+
+                // The account path, offered where the user is actually looking:
+                // the local provider works without any account, so this is how
+                // they discover what connecting adds — and a mismatch means the
+                // saved account needs replacing rather than adding.
+                data.connected === false || data.account_mismatch
                   ? jsx('div', {
                       className: 'hermes-spotify-connect',
                       children: jsx(Button, {
                         variant: 'text',
                         size: 'micro',
-                        onClick: () => send('connect')(),
-                        children: 'Connect Spotify for artwork and volume'
+                        onClick: () => send(data.account_mismatch ? 'reauth' : 'connect')(),
+                        children: data.account_mismatch
+                          ? 'Reconnect with a different Spotify account'
+                          : 'Connect Spotify for artwork and volume'
                       })
                     })
                   : null,

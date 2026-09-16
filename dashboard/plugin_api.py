@@ -150,15 +150,19 @@ def _client_id_configured() -> bool:
     return False
 
 
-def _start_connect() -> Dict[str, Any]:
+def _start_connect(force: bool = False) -> Dict[str, Any]:
     """Begin the Spotify OAuth flow in a detached process.
 
     The login blocks for up to ~3 minutes waiting for the browser callback, so it
     cannot run inside this request. It also cannot be started at all when no client
     id is saved: that path is an interactive developer-app wizard, which would hang
     invisibly here — so it is refused with the command to run instead.
+
+    `force` exists because stored tokens are not proof of the RIGHT account: after
+    changing account in the Spotify app, `_connected()` is still true and a plain
+    connect would no-op while the user watches nothing happen.
     """
-    if _connected():
+    if _connected() and not force:
         return {"ok": True, "action": "connect", "noop": True}
 
     if not _client_id_configured():
@@ -206,22 +210,38 @@ def _decorate(payload: Dict[str, Any]) -> Dict[str, Any]:
     recoveries, and they are host capabilities rather than current-state facts.
     """
     connected = _connected()
+    needs_reauth = bool(payload.get("needs_reauth"))
     payload.setdefault("ok", True)
     payload["connected"] = connected
-    # Safe even when the app is already open (it just takes focus), so this is a
-    # capability of the host, not of the current playback state.
-    payload["can_launch"] = bool(smtc is not None and smtc.available())
-    payload["can_connect"] = not connected
+    # With dead tokens, "open the app" is the wrong advice — the account needs
+    # re-authorising, so suppress the launch hint and offer the reconnect.
+    payload["can_launch"] = bool(smtc is not None and smtc.available()) and not needs_reauth
+    payload["can_connect"] = (not connected) or needs_reauth
     return payload
 
 
-def _unavailable(reason: str) -> Dict[str, Any]:
+def _looks_like_auth_failure(exc: Exception) -> bool:
+    """A revoked app or an aged-out refresh token surfaces as an ordinary failure.
+
+    `get_auth_status` only checks that a refresh token is STORED
+    (`logged_in = bool(refresh_token or not _is_expiring(...))`), so `connected`
+    stays true forever with dead tokens. The error text is the only signal that the
+    account needs RE-authorising rather than the app needing to be opened — and
+    offering "Open Spotify" to someone whose Spotify is already open is worse than
+    offering nothing.
+    """
+    text = f"{type(exc).__name__}: {exc}".lower()
+    return any(marker in text for marker in ("auth", "401", "unauthorized", "revoked", "invalid_grant"))
+
+
+def _unavailable(reason: str, **extra: Any) -> Dict[str, Any]:
     return {
         "ok": True,
         "provider": None,
         "available": False,
         "playing": False,
         "error": reason,
+        **extra,
     }
 
 
@@ -266,12 +286,18 @@ def _webapi_now() -> Dict[str, Any]:
     try:
         client = _client()
     except Exception as exc:
-        return _unavailable(f"Spotify is not reachable ({type(exc).__name__})")
+        return _unavailable(
+            f"Spotify is not reachable ({type(exc).__name__}: {exc})",
+            needs_reauth=_looks_like_auth_failure(exc),
+        )
 
     try:
         state = client.get_playback_state()
     except Exception as exc:
-        return _unavailable(f"{type(exc).__name__}: {exc}")
+        return _unavailable(
+            f"{type(exc).__name__}: {exc}",
+            needs_reauth=_looks_like_auth_failure(exc),
+        )
 
     # get_playback_state returns a sentinel dict on 204 (nothing playing).
     if not state or state.get("empty") or state.get("status_code") == 204:
@@ -392,7 +418,19 @@ async def now() -> dict:
             )
         )
     if provider == "webapi":
-        return _decorate(_webapi_now())
+        result = _webapi_now()
+        # The Web API speaks for the ACCOUNT that authorised Hermes, not for this
+        # machine. If that account has no active device here — the usual cause is the
+        # Spotify app being signed into a DIFFERENT account — the Web API goes blind
+        # while the OS media session still sees the real, local player. Trust the
+        # machine, and label the mismatch so the UI can explain itself instead of
+        # telling the user to open an app that is already open and playing.
+        if not result.get("available") and smtc is not None and smtc.available():
+            local = smtc.provider().now()
+            if local.get("available"):
+                local["account_mismatch"] = True
+                return _decorate(local)
+        return _decorate(result)
     if smtc is None:
         return _decorate(_unavailable("The local media-session provider failed to load on this host."))
     return _decorate(smtc.provider().now())
@@ -419,8 +457,10 @@ async def command(body: dict) -> dict:
             if smtc is not None
             else {"ok": False, "action": "launch", "error": "starting Spotify from here needs Windows"}
         )
-    elif action == "connect":
-        result = _start_connect()
+    elif action in {"connect", "reauth"}:
+        # `reauth` is the forced variant: the account changed (or the grant was
+        # revoked) while tokens are still on disk, so the plain connect would no-op.
+        result = _start_connect(force=(action == "reauth"))
     elif provider == "webapi":
         result = _webapi_command(action, body or {})
     elif provider == "local":

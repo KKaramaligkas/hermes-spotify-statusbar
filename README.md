@@ -74,6 +74,34 @@ and volume"** — the two things connecting actually adds over the zero-setup pa
 that path is an interactive wizard, so it tells you to run `hermes auth spotify` in a
 terminal instead of spawning something that would wait invisibly.
 
+## If you change Spotify account
+
+The two providers behave very differently here, and it's worth knowing why:
+
+- **Local provider: nothing to do.** It reads the OS media session, which knows nothing
+  about accounts — switch account in the Spotify app and the player simply follows. No
+  credentials exist to go stale.
+- **Web API provider: it speaks for the account that authorised Hermes**, not for this
+  machine. So after switching account in the Spotify app, the saved tokens still point at
+  the *old* account, and that account has no active device here.
+
+The plugin handles that instead of getting confused:
+
+- If the Web API reports nothing playing while this machine *does* have a session, it falls
+  back to the local session and marks the response `account_mismatch`. The popover then
+  explains: *"Showing this machine — your connected Spotify account is a different one."*
+  You get your real track back, not a bogus "Open Spotify" prompt.
+- The popover offers **"Reconnect with a different Spotify account"**, which forces the
+  authorization flow. Plain `connect` would no-op in this state, because tokens *do* exist —
+  they're just the wrong account's.
+- A **revoked** grant (removed at spotify.com/account/apps, or an aged-out refresh token) is
+  detected from the failure itself, and the chip offers **"Reconnect Spotify"** rather than
+  telling you to open an app that is already open and playing.
+
+The underlying reason all this is needed: `hermes auth status spotify` reports `logged_in`
+whenever a refresh token is *stored*, which is a presence check, not a validity check. Dead
+tokens keep looking connected, so this plugin treats the API failure as the signal.
+
 ## Two providers
 
 The backend picks the best available source per request:
